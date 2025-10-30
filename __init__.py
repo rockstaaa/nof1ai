@@ -23,10 +23,10 @@ Or run directly:
 
 __version__ = "1.0.0"
 
-from .agents.base_pure_agent import BasePureLLMAgent
+from .agents.base_pure_agent import BaseNof1Agent
 from .agents.deepseek_trader import DeepSeekTrader
 
 __all__ = [
-    'BasePureLLMAgent',
+    'BaseNof1Agent',
     'DeepSeekTrader',
 ]

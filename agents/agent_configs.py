@@ -21,23 +21,27 @@ To use:
 
 CONFIG = {
     # Exchange
-    'EXCHANGE': 'hyperliquid',           # Only HyperLiquid supported in standalone version
-    
-    # Capital
-    'STARTING_CAPITAL_USD': 500,         # Starting capital ($500 default)
-    
-    # Symbols to Trade (match Nof1 default universe)
-    'SYMBOLS': ['BTC', 'ETH', 'SOL', 'BNB', 'DOGE', 'XRP'],  # 6-coin set like Nof1
+    'EXCHANGE': 'upstox',                # Default to Upstox / NSE (Indian equities & F&O)
+
+    # Capital (INR) - configure starting capital in Indian Rupees
+    'STARTING_CAPITAL_INR': 100000.0,    # Starting capital (INR) - default ₹100,000
+
+    # Symbols to Trade (Nifty / BankNifty / top F&O underlying + sample stocks)
+    # Use NSE symbol tickers or canonical names accepted by Upstox adapter
+    'SYMBOLS': [
+        'NIFTY', 'BANKNIFTY',            # Indices (F&O underlyings)
+        'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK'
+    ],
     
     # ============================================================================
     # 💰 POSITION SIZING & LEVERAGE
     # ============================================================================
     
     # Leverage
-    'MAX_LEVERAGE': 20,                  # Maximum leverage (1-50x on HyperLiquid)
+    'MAX_LEVERAGE': 10,                  # Maximum leverage (equities/F&O margin - keep reasonable)
     
     # Position Sizing
-    'MAX_POSITION_PERCENT': 90,          # Use 90% of capital per position
+    'MAX_POSITION_PERCENT': 20,          # Use up to 20% of capital per position (configurable)
                                          # With $500 capital:
                                          # - Margin: $500 × 90% = $450
                                          # - Notional at 20x: $450 × 20 = $9,000
@@ -90,7 +94,22 @@ CONFIG = {
     'LONGTERM_BARS': 10,                 # Last 10 bars (40 hours)
     
     # Perpetuals Data
-    'INCLUDE_PERPETUALS_DATA': True,     # Include OI & funding rate
+    'INCLUDE_PERPETUALS_DATA': False,    # Perpetuals not relevant for NSE; keep False for Upstox
+
+    # ============================================================================
+    # 🇮🇳 INDIAN MARKET / F&O CONFIG
+    # ============================================================================
+    # Lot sizes (F&O) - default values; update to exchange-provided values at runtime
+    'FO_LOT_SIZES': {
+        'NIFTY': 50,        # default lot - update dynamically via API if available
+        'BANKNIFTY': 15,
+    },
+
+    # Trading calendar / market hours (NSE) - trading allowed only in this window in IST
+    'MARKET_OPEN_TIME': '09:15',
+    'MARKET_CLOSE_TIME': '15:30',
+    # Holidays list (YYYY-MM-DD) - can be extended or populated from external calendar
+    'MARKET_HOLIDAYS': [],
     
     # ============================================================================
     # 📝 LOGGING & MONITORING
@@ -104,6 +123,9 @@ CONFIG = {
     'REASONING_LOG_DIR': 'src/data/nof1_agents/reasoning/',
     'TRADE_LOG_DIR': 'src/data/nof1_agents/trades/',
     'PERFORMANCE_LOG_DIR': 'src/data/nof1_agents/performance/',
+
+    # Currency used when EXCHANGE == 'upstox'
+    'CURRENCY': 'INR',
     
     # ============================================================================
     # 🎯 EXECUTION SETTINGS
@@ -111,6 +133,9 @@ CONFIG = {
     
     'ORDER_TYPE': 'limit',               # 'limit' or 'market'
     'SLIPPAGE_TOLERANCE': 0.001,         # 0.1% slippage for limit orders
+
+    # Paper trading support (true = do not hit real exchange)
+    'PAPER_TRADING': True,
     
     # ============================================================================
     # 💬 PROMPT SETTINGS

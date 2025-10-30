@@ -28,12 +28,14 @@ class AccountFormatter:
         """
         self.exchange = exchange
         
-        # Import appropriate nice_funcs (HyperLiquid only in standalone)
+        # Import appropriate exchange adapter
         if exchange == 'hyperliquid':
             from exchange import nice_funcs_hyperliquid as nf
+        elif exchange == 'upstox':
+            from exchange import upstox_marketdata as nf
         else:
-            raise ValueError(f"Only 'hyperliquid' exchange is supported. Got: {exchange}")
-        
+            raise ValueError(f"Unsupported exchange for AccountFormatter: {exchange}")
+
         self.nf = nf
         
         # Track starting balance for return calculation
@@ -59,10 +61,16 @@ class AccountFormatter:
         """
         try:
             # Get current account value
-            if self.exchange in ['hyperliquid', 'aster']:
+            if self.exchange == 'upstox':
+                acct = self.nf.get_account_balance()
+                account_value = acct.get('account_value_inr', acct.get('account_value', 0))
+                available = acct.get('available_cash_inr', acct.get('available_cash', 0))
+            elif self.exchange in ['hyperliquid', 'aster']:
                 account_value = self._get_futures_account_value()
+                available = 0
             else:
                 account_value = self._get_spot_account_value()
+                available = account_value
             
             # Initialize starting balance if not set
             if self.start_balance is None:
@@ -77,11 +85,11 @@ class AccountFormatter:
             sharpe_ratio = self._calculate_sharpe_ratio()
             
             # Get margin info
-            margin_info = self._get_margin_info()
-            
+            margin_info = self._get_margin_info() if self.exchange != 'upstox' else {'available': available, 'used': 0, 'unrealized_pnl': 0}
+
             return {
                 'total_return_percent': round(total_return_percent, 2),
-                'available_cash': round(margin_info.get('available', 0), 2),
+                'available_cash': round(margin_info.get('available', available), 2),
                 'account_value': round(account_value, 2),
                 'sharpe_ratio': round(sharpe_ratio, 3),
                 'equity': round(account_value, 2),
@@ -90,6 +98,7 @@ class AccountFormatter:
                 'total_pnl': round(total_pnl, 2),
                 'total_pnl_percent': round(total_return_percent, 2),
                 'unrealized_pnl': round(margin_info.get('unrealized_pnl', 0), 2),
+                'currency': 'INR' if self.exchange == 'upstox' else 'USD'
             }
             
         except Exception as e:

@@ -24,18 +24,19 @@ if purellm_root not in sys.path:
 
 # Import prompts at module level
 from prompts.nof1_style_prompt import NOF1_SYSTEM_PROMPT
+
+
 class BaseNof1Agent(ABC):
     """
     Base class for Nof1-style trading agents
-    
+
     This class handles:
     - Data collection (account, positions, market data)
     - Prompt formatting
     - Decision execution
     - Main trading loop
-    
-    Subclasses implement:
-    - get_llm_decision() - Call specific LLM
+
+    Subclasses implement get_llm_decision()
     """
     
     def __init__(
@@ -73,12 +74,14 @@ class BaseNof1Agent(ABC):
         self.position_formatter = PositionFormatter(exchange=exchange)
         self.account_formatter = AccountFormatter(exchange=exchange)
         
-        # Import nice_funcs for execution (HyperLiquid only in standalone)
+        # Import exchange adapter (HyperLiquid, Upstox, etc.)
         if exchange == 'hyperliquid':
             from exchange import nice_funcs_hyperliquid as nf
+        elif exchange == 'upstox':
+            from exchange import upstox_marketdata as nf
         else:
-            raise ValueError(f"Only 'hyperliquid' exchange is supported in standalone nof1-agents. Got: {exchange}")
-        
+            raise ValueError(f"Unsupported exchange: {exchange}")
+
         self.nf = nf
         
         # Trading state
@@ -112,18 +115,21 @@ class BaseNof1Agent(ABC):
             cprint("   💰 Fetching account data...", "yellow")
         account_data = self.account_formatter.get_account_data()
         if self.verbose:
-            cprint(f"      Account Value: ${account_data['account_value']:,.2f}", "white")
-            cprint(f"      Available Cash: ${account_data['available_cash']:,.2f}", "white")
-            cprint(f"      Total Return: {account_data['total_return_percent']:.2f}%", "white")
+            currency = account_data.get('currency', 'USD')
+            symbol = '₹' if str(currency).upper() == 'INR' else '$'
+            cprint(f"      Account Value: {symbol}{account_data.get('account_value', 0):,.2f}", "white")
+            cprint(f"      Available Cash: {symbol}{account_data.get('available_cash', 0):,.2f}", "white")
+            cprint(f"      Total Return: {account_data.get('total_return_percent', 0):.2f}%", "white")
         
         # 2. Get current positions (if any)
         if self.verbose:
             cprint("   📈 Fetching current positions...", "yellow")
         positions = self.position_formatter.get_all_positions(self.symbols)
         if self.verbose:
+            ccy_symbol = '₹' if account_data.get('currency', 'USD').upper() == 'INR' else '$'
             if positions:
-                for symbol, pos in positions.items():
-                    cprint(f"      {symbol}: {pos['quantity']:.4f} @ ${pos['current_price']:,.2f} | P&L: ${pos['unrealized_pnl']:,.2f}", "white")
+                for p_symbol, pos in positions.items():
+                    cprint(f"      {p_symbol}: {pos.get('quantity',0):.4f} @ {ccy_symbol}{pos.get('current_price',0):,.2f} | P&L: {ccy_symbol}{pos.get('unrealized_pnl',0):,.2f}", "white")
             else:
                 cprint("      No open positions", "white")
         
@@ -185,6 +191,39 @@ class BaseNof1Agent(ABC):
             interaction_count=self.interaction_count,
             start_time=self.start_time
         )
+
+    def _is_market_open(self, config: dict) -> bool:
+        """
+        Simple NSE market hours & holiday check (India Standard Time)
+        Expects config to contain 'MARKET_OPEN_TIME', 'MARKET_CLOSE_TIME', 'MARKET_HOLIDAYS'
+        """
+        try:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo('Asia/Kolkata')
+            now = datetime.now(tz)
+
+            # Weekends closed
+            if now.weekday() >= 5:
+                return False
+
+            # Holidays
+            date_str = now.strftime('%Y-%m-%d')
+            if date_str in config.get('MARKET_HOLIDAYS', []) :
+                return False
+
+            # Parse times
+            from datetime import time as dt_time
+            open_str = config.get('MARKET_OPEN_TIME', '09:15')
+            close_str = config.get('MARKET_CLOSE_TIME', '15:30')
+            open_t = datetime.strptime(open_str, '%H:%M').time()
+            close_t = datetime.strptime(close_str, '%H:%M').time()
+
+            now_t = now.time()
+            return open_t <= now_t <= close_t
+        except Exception:
+            # On any error, return True to avoid accidental misses; caller should handle conservatively
+            return True
     
     @abstractmethod
     def get_llm_decision(self, prompt: str, system_prompt: str) -> Dict:
@@ -251,20 +290,66 @@ class BaseNof1Agent(ABC):
             take_profit = decision.get('take_profit', 0)
             
             cprint(f"\n🚀 OPENING {action}: {symbol}", "white", "on_green")
-            cprint(f"   Position Size: ${position_size:,.2f} (notional)", "white")
-            cprint(f"   Leverage: {leverage}x", "white")
-            cprint(f"   Entry: ${entry_price:,.2f}", "white")
-            cprint(f"   Stop Loss: ${stop_loss:,.2f}", "white")
-            cprint(f"   Take Profit: ${take_profit:,.2f}", "white")
+            # Currency-aware prints
+            currency = 'INR' if getattr(self, 'exchange', '') == 'upstox' else 'USD'
+            sym = '₹' if currency == 'INR' else '$'
+            if currency == 'INR':
+                # Use INR-aware fields where available
+                pos_display = decision.get('position_size_inr', position_size)
+                cprint(f"   Position Size: {sym}{pos_display:,.2f} ({currency} notional)", "white")
+                cprint(f"   Leverage: {leverage}x", "white")
+                cprint(f"   Entry: {sym}{entry_price:,.2f}", "white")
+                cprint(f"   Stop Loss: {sym}{stop_loss:,.2f}", "white")
+                cprint(f"   Take Profit: {sym}{take_profit:,.2f}", "white")
+            else:
+                cprint(f"   Position Size: ${position_size:,.2f} (notional)", "white")
+                cprint(f"   Leverage: {leverage}x", "white")
+                cprint(f"   Entry: ${entry_price:,.2f}", "white")
+                cprint(f"   Stop Loss: ${stop_loss:,.2f}", "white")
+                cprint(f"   Take Profit: ${take_profit:,.2f}", "white")
             
-            # Execute on HyperLiquid
-            if action == 'OPEN_LONG':
-                success = self.nf.ai_entry(symbol, position_size, leverage=leverage)
-            else:  # OPEN_SHORT
-                if hasattr(self.nf, 'open_short'):
-                    success = self.nf.open_short(symbol, position_size, slippage=0.001, leverage=leverage)
+            # Exchange-specific execution
+            if getattr(self, 'exchange', '') == 'upstox':
+                # Upstox expects quantity in shares or lots. Prefer explicit quantity_lots from decision.
+                quantity = None
+                lot_size = decision.get('lot_size')
+                quantity_lots = decision.get('quantity_lots')
+                try:
+                    if not lot_size and hasattr(self.nf, 'get_lot_size'):
+                        lot_size = self.nf.get_lot_size(symbol)
+                except Exception:
+                    lot_size = lot_size or 1
+
+                if quantity_lots:
+                    quantity = int(quantity_lots) * int(lot_size or 1)
                 else:
-                    success = self.nf.market_sell(symbol, position_size, slippage=0.001, leverage=leverage)
+                    # Derive from notional if provided
+                    notional = decision.get('position_size_inr') or decision.get('position_size_usd')
+                    current_price = None
+                    try:
+                        current_price = self.nf.get_current_price(symbol)
+                    except Exception:
+                        current_price = None
+                    if notional and current_price and current_price > 0:
+                        approx_qty = int((notional / current_price) // (lot_size or 1)) * (lot_size or 1)
+                        quantity = max(approx_qty, lot_size or 1)
+                    else:
+                        quantity = lot_size or 1
+
+                # Place market order via Upstox adapter
+                if action == 'OPEN_LONG':
+                    success = self.nf.market_buy(symbol, quantity, price=entry_price)
+                else:
+                    success = self.nf.market_sell(symbol, quantity, price=entry_price)
+            else:
+                # Execute on HyperLiquid
+                if action == 'OPEN_LONG':
+                    success = self.nf.ai_entry(symbol, position_size, leverage=leverage)
+                else:  # OPEN_SHORT
+                    if hasattr(self.nf, 'open_short'):
+                        success = self.nf.open_short(symbol, position_size, slippage=0.001, leverage=leverage)
+                    else:
+                        success = self.nf.market_sell(symbol, position_size, slippage=0.001, leverage=leverage)
             
             if success:
                 cprint("✅ Position opened successfully!", "white", "on_green")
@@ -344,7 +429,17 @@ class BaseNof1Agent(ABC):
             cprint(f"🌙 ITERATION #{self.iteration} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "cyan", attrs=['bold'])
             cprint(f"{'='*60}", "cyan")
             
-            # 1. Collect all data from HyperLiquid
+            # 1. Market hours check (for exchanges with sessions like Upstox/NSE)
+            try:
+                if self.exchange == 'upstox':
+                    from agents.agent_configs import CONFIG
+                    if not self._is_market_open(CONFIG):
+                        cprint("⏰ Market is currently closed (NSE hours / holiday). Skipping this iteration.", "yellow")
+                        return
+            except Exception:
+                pass
+
+            # 2. Collect all data from exchange
             data = self.collect_all_data()
             
             # 2. Format into Nof1-style prompt

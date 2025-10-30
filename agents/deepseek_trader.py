@@ -96,7 +96,11 @@ class DeepSeekTrader(BaseNof1Agent):
         """
         # Read from CONFIG with overrides
         symbols = symbols or CONFIG['SYMBOLS']
-        starting_capital_usd = starting_capital_usd or CONFIG['STARTING_CAPITAL_USD']
+        # Starting capital: support USD (crypto) and INR (Upstox)
+        if CONFIG.get('EXCHANGE') == 'upstox':
+            starting_capital_usd = starting_capital_usd or CONFIG.get('STARTING_CAPITAL_INR', 100000.0)
+        else:
+            starting_capital_usd = starting_capital_usd or CONFIG.get('STARTING_CAPITAL_USD', 500.0)
         max_leverage = max_leverage or CONFIG['MAX_LEVERAGE']
         max_position_percent = max_position_percent or CONFIG['MAX_POSITION_PERCENT']
         check_interval_minutes = check_interval_minutes or CONFIG['CHECK_INTERVAL_MINUTES']
@@ -159,7 +163,9 @@ class DeepSeekTrader(BaseNof1Agent):
         cprint(f"   Exchange: {self.exchange}", "white")
         cprint(f"   Symbols: {self.symbols}", "white")
         cprint(f"   Check Interval: {self.check_interval}s ({self.check_interval/60:.1f} min)", "white")
-        cprint(f"   Starting Capital: ${self.starting_capital:,.2f}", "white")
+        currency = 'INR' if CONFIG.get('EXCHANGE') == 'upstox' else 'USD'
+        sym = '₹' if currency == 'INR' else '$'
+        cprint(f"   Starting Capital: {sym}{self.starting_capital:,.2f} ({currency})", "white")
         cprint(f"   Max Leverage: {self.max_leverage}x", "white")
         cprint(f"   Max Position %: {self.max_position_percent}%", "white")
         cprint(f"   Min Confidence: {self.min_confidence:.1%}", "white")
@@ -259,13 +265,32 @@ class DeepSeekTrader(BaseNof1Agent):
             json_str = response_text[start:end]
             decision = json.loads(json_str)
             
-            # Ensure required fields
-            required_fields = ['decision', 'symbol']
-            for field in required_fields:
-                if field not in decision:
-                    cprint(f"⚠️  Missing required field: {field}", "yellow")
-                    return None
-            
+            # Normalize old/new decision formats
+            # New prompt uses: BUY / SELL / CLOSE / DO_NOTHING
+            raw_decision = decision.get('decision', '').upper()
+            mapping = {
+                'BUY': 'OPEN_LONG',
+                'SELL': 'OPEN_SHORT',
+                'CLOSE': 'CLOSE_POSITION',
+                'DO_NOTHING': 'DO_NOTHING'
+            }
+
+            if raw_decision in mapping:
+                decision['decision'] = mapping[raw_decision]
+
+            # If Upstox style fields present, map them
+            if 'entry_price_inr' in decision:
+                decision['entry_price'] = decision.get('entry_price_inr')
+            if 'quantity_lots' in decision:
+                # Keep quantity_lots and lot_size for exchange-specific execution
+                decision['quantity_lots'] = int(decision.get('quantity_lots', 0))
+                decision['lot_size'] = int(decision.get('lot_size', 1))
+
+            # Ensure at least decision and symbol present
+            if 'decision' not in decision or 'symbol' not in decision:
+                cprint("⚠️  Missing required field: decision or symbol", "yellow")
+                return None
+
             return decision
             
         except json.JSONDecodeError as e:

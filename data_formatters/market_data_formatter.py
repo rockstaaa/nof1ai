@@ -22,7 +22,6 @@ except ImportError:
     PANDAS_TA_AVAILABLE = False
     print("⚠️ pandas_ta not available - using basic indicators only")
 
-from exchange.nice_funcs_hyperliquid import get_data, get_current_price, get_funding_rates
 class MarketDataFormatter:
     """
     Formats market data for LLM consumption
@@ -42,9 +41,15 @@ class MarketDataFormatter:
             exchange: Exchange to use (only 'hyperliquid' in standalone version)
         """
         self.exchange = exchange
-        
-        if exchange != 'hyperliquid':
-            raise ValueError(f"Only 'hyperliquid' exchange is supported in standalone nof1-agents. Got: {exchange}")
+        # Import the requested exchange adapter
+        if exchange == 'hyperliquid':
+            from exchange import nice_funcs_hyperliquid as nf
+            self.nf = nf
+        elif exchange == 'upstox':
+            from exchange import upstox_marketdata as nf
+            self.nf = nf
+        else:
+            raise ValueError(f"Unsupported exchange for MarketDataFormatter: {exchange}")
     
     def get_market_data(self, symbols: List[str], timeframe: str = '3m') -> Dict:
         """
@@ -91,10 +96,16 @@ class MarketDataFormatter:
             Dict with symbol data
         """
         # Get current price and basic info
-        current_price = get_current_price(symbol)
-        
+        try:
+            current_price = self.nf.get_current_price(symbol)
+        except Exception:
+            current_price = 0
+
         # Get OHLCV data (returns DataFrame)
-        ohlcv_data = get_data(symbol, timeframe, bars=100)
+        try:
+            ohlcv_data = self.nf.get_data(symbol, timeframe, bars=100)
+        except Exception:
+            ohlcv_data = None
         
         if ohlcv_data is None or ohlcv_data.empty or len(ohlcv_data) < 2:
             return {
@@ -117,7 +128,7 @@ class MarketDataFormatter:
         # Calculate volume
         volume_24h = df['volume'].sum() if 'volume' in df.columns else 0
         
-        # Calculate technical indicators if pandas_ta is available
+    # Calculate technical indicators if pandas_ta is available
         indicators = {}
         if PANDAS_TA_AVAILABLE and len(df) >= 20:
             try:
@@ -180,14 +191,9 @@ class MarketDataFormatter:
             if len(df) >= 26:
                 indicators['ema_26'] = float(df['close'].ewm(span=26).mean().iloc[-1])
         
-        # Get funding rate
-        try:
-            funding_rate = get_funding_rates()
-            symbol_funding = funding_rate.get(symbol, 0)
-        except:
-            symbol_funding = 0
-        
-        # Get open interest (placeholder for now)
+        # Funding rates / perpetuals not applicable for NSE; leave zero or use options data if available
+        symbol_funding = 0
+        # Open interest placeholder - F&O OI can be added via Upstox if implemented
         symbol_oi = 0
         
         return {

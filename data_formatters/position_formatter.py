@@ -26,12 +26,14 @@ class PositionFormatter:
         """
         self.exchange = exchange
         
-        # Import appropriate nice_funcs (HyperLiquid only in standalone)
+        # Import appropriate exchange adapter
         if exchange == 'hyperliquid':
             from exchange import nice_funcs_hyperliquid as nf
+        elif exchange == 'upstox':
+            from exchange import upstox_marketdata as nf
         else:
-            raise ValueError(f"Only 'hyperliquid' exchange is supported. Got: {exchange}")
-        
+            raise ValueError(f"Unsupported exchange for PositionFormatter: {exchange}")
+
         self.nf = nf
     
     def get_all_positions(self, symbols: Optional[List[str]] = None) -> Dict[str, Dict]:
@@ -64,6 +66,8 @@ class PositionFormatter:
             if self.exchange in ['hyperliquid', 'aster']:
                 # Get positions from futures exchange
                 positions = self._get_perpetuals_positions(symbols)
+            elif self.exchange == 'upstox':
+                positions = self._get_perpetuals_positions(symbols)
             else:
                 # Solana - get token balances
                 positions = self._get_spot_positions(symbols)
@@ -80,24 +84,56 @@ class PositionFormatter:
         
         try:
             # Get all positions if symbols not specified
+            if self.exchange == 'upstox':
+                all_pos = self.nf.get_all_positions() or {}
+                # If symbols not specified, use all keys
+                if symbols is None:
+                    symbols = list(all_pos.keys())
+
+                for symbol in symbols:
+                    p = all_pos.get(symbol)
+                    if not p:
+                        continue
+                    qty = p.get('quantity', 0)
+                    avg = p.get('avg_price', p.get('entry_price', 0))
+                    cur = p.get('current_price', self.nf.get_current_price(symbol))
+                    unrealized = p.get('unrealized_pnl', (cur - avg) * qty)
+
+                    positions[symbol] = {
+                        'quantity': abs(qty),
+                        'side': 'LONG' if qty > 0 else 'SHORT',
+                        'entry_price': avg,
+                        'current_price': cur,
+                        'liquidation_price': 0,
+                        'unrealized_pnl': unrealized,
+                        'leverage': 1,
+                        'exit_plan': self._get_exit_plan(symbol, {'quantity': qty, 'entry_price': avg}),
+                        'confidence': 0.0,
+                        'risk_usd': abs((cur * qty) * 0.02),
+                        'notional_usd': abs(cur * qty),
+                        'pnl_percentage': (unrealized / (abs(avg * qty) + 1e-9)) * 100 if avg and qty else 0,
+                    }
+                return positions
+
+            # legacy/hyperliquid path
             if symbols is None:
                 if hasattr(self.nf, 'get_all_positions'):
                     all_pos = self.nf.get_all_positions()
                     symbols = list(all_pos.keys())
                 else:
                     return {}
-            
+
             for symbol in symbols:
                 # Get account info first
                 account = self.nf._get_account_from_env()
                 if not account:
                     print(f"❌ Could not get account info for {symbol}")
                     continue
-                    
+
                 pos_result = self.nf.get_position(symbol, account)
                 # get_position returns: (positions_list, im_in_pos, pos_size, pos_sym, entry_px, pnl_perc, is_long)
                 positions_list, im_in_pos, pos_size, pos_sym, entry_px, pnl_perc, is_long = pos_result
-                
+
                 if im_in_pos and pos_size != 0:
                     # Format position data from tuple values
                     quantity = float(pos_size)
@@ -105,17 +141,17 @@ class PositionFormatter:
                     current_price = entry_price  # We'll need to get current price separately
                     unrealized_pnl = float(pnl_perc) / 100  # Convert percentage to decimal
                     leverage = 1  # Default leverage, could be extracted from positions[0] if needed
-                    
+
                     # Calculate notional value
                     notional_usd = abs(quantity) * current_price
-                    
+
                     # Calculate liquidation price (estimate)
                     liquidation_price = self._estimate_liquidation_price(
                         entry_price,
                         leverage,
                         is_long=(quantity > 0)
                     )
-                    
+
                     # Format position
                     positions[symbol] = {
                         'quantity': abs(quantity),
